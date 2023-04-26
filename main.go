@@ -60,7 +60,7 @@ func initConfig() {
 		viper.AddConfigPath("../../config")
 		viper.SetConfigName("local")
 		if err := viper.BindPFlags(rootCmd.PersistentFlags()); err != nil {
-			panic(fmt.Errorf("Flags are not bindable: %v\n", err))
+			panic(fmt.Errorf("flags are not bindable: %v", err))
 		}
 	}
 	viper.SetConfigType("yaml")
@@ -146,9 +146,9 @@ func follow(pgpool *pgxpool.Pool, file *os.File) {
 		jsonStr := ""
 		for i := 0; i < batch; i++ {
 			if i == 0 {
-				jsonStr = fmt.Sprintf(`{"method":"eth_getBlockByNumber","params":[%v, false],"id":1,"jsonrpc":"2.0"}`, fromBlock)
+				jsonStr = fmt.Sprintf(`{"method":"eth_getBlockByNumber","params":[%v, false],"id":%v,"jsonrpc":"2.0"}`, int(fromBlock)+i, i)
 			} else {
-				jsonStr += fmt.Sprintf(`, {"method":"eth_getBlockByNumber","params":[%v, false],"id":1,"jsonrpc":"2.0"}`, fromBlock)
+				jsonStr += fmt.Sprintf(`, {"method":"eth_getBlockByNumber","params":[%v, false],"id":%v,"jsonrpc":"2.0"}`, int(fromBlock)+i, i)
 			}
 		}
 		responce, err := batchRequest(fmt.Sprintf("[%s]", jsonStr))
@@ -161,7 +161,7 @@ func follow(pgpool *pgxpool.Pool, file *os.File) {
 				insertMissingBlock(pgpool, fmt.Sprintf("('%v')", fromBlock))
 			}
 			for _, tx := range resp.Result.Transactions {
-				insertTx(pgpool, fmt.Sprintf("('%s')", tx))
+				insertTx(pgpool, tx, fromBlock)
 			}
 			fromBlock += 1
 			file.Truncate(0)
@@ -176,11 +176,11 @@ func follow(pgpool *pgxpool.Pool, file *os.File) {
 	}
 }
 
-func insertTx(pgpool *pgxpool.Pool, value string) {
+func insertTx(pgpool *pgxpool.Pool, tx string, block uint64) {
 	insertSql := fmt.Sprintf(`
-	INSERT INTO relayer2_tx (tx)
-    VALUES %s
-    ON CONFLICT (tx) DO UPDATE SET count = relayer2_tx.count + 1;`, value)
+	INSERT INTO relayer2_tx (tx, blocks)
+    VALUES ('%s', '{%v}')
+    ON CONFLICT (tx) DO UPDATE SET count = relayer2_tx.count + 1, blocks = relayer2_tx.blocks || '{%v}';`, tx, block, block)
 
 	if _, err := pgpool.Exec(context.Background(), insertSql); err != nil {
 		panic(err)
@@ -195,3 +195,14 @@ func insertMissingBlock(pgpool *pgxpool.Pool, block string) {
 		panic(err)
 	}
 }
+
+// func insertStats(pgpool *pgxpool.Pool, id int, value int) {
+// 	insertSql := fmt.Sprintf(`
+// 	INSERT INTO relayer2_stats (id)
+//     VALUES (%v)
+//     ON CONFLICT (id) DO UPDATE SET count = relayer2_stats.count + %v;`, id, value)
+
+// 	if _, err := pgpool.Exec(context.Background(), insertSql); err != nil {
+// 		panic(err)
+// 	}
+// }
