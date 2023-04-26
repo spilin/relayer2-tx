@@ -25,3 +25,4 @@ coverage/
 # Local configuration
 config/local.yaml
 aurora_source.csv
+seq

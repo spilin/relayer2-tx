@@ -3,5 +3,6 @@ database: postgresql://postgres:@localhost:5432/blockscout_mainnet
 debug: false
 rpc: 
 blockFile: "seq"
-fromBlock: 0
+fromBlock: 37157758
 toBlock: 90340797
+batch: 99

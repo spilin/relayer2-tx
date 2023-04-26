@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 
 	_ "github.com/doug-martin/goqu/v9/dialect/postgres"
-	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -20,14 +23,19 @@ import (
 var configFile, databaseURL, rpcUrl, blockFile string
 var debug bool
 var fromBlock, toBlock uint64
+var batch int
 
-type Transaction struct {
-	Hash string `json:"hash"`
-}
+// type Transaction struct {
+// 	Hash string `json:"hash"`
+// }
 
 type Block struct {
-	Number       string        `json:"number"`
-	Transactions []Transaction `json:"transactions"`
+	Number       string   `json:"number"`
+	Transactions []string `json:"transactions"`
+}
+
+type Responce struct {
+	Result Block `json:"result"`
 }
 
 func main() {
@@ -39,6 +47,7 @@ func main() {
 	rootCmd.PersistentFlags().Uint64VarP(&fromBlock, "fromBlock", "f", 0, "block to start from. Ignored if missing or 0. (default 0)")
 	rootCmd.PersistentFlags().Uint64VarP(&toBlock, "toBlock", "t", 0, "block to end on. Ignored if missing or 0. (default 0)")
 	rootCmd.PersistentFlags().StringVarP(&rpcUrl, "rpc", "r", "", "rpc url")
+	rootCmd.PersistentFlags().IntVarP(&batch, "batch", "a", 99, "batch size")
 	cobra.CheckErr(rootCmd.Execute())
 }
 
@@ -66,6 +75,7 @@ func initConfig() {
 	blockFile = viper.GetString("blockFile")
 	fromBlock = viper.GetUint64("fromBlock")
 	toBlock = viper.GetUint64("toBlock")
+	batch = viper.GetInt("batch")
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	if debug {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
@@ -84,12 +94,6 @@ var rootCmd = &cobra.Command{
 		}
 		defer pgpool.Close()
 
-		client, err := rpc.DialContext(context.Background(), rpcUrl)
-		if err != nil {
-			panic(fmt.Errorf("Unable to connect to %s: %v\n", rpcUrl, err))
-		}
-		defer client.Close()
-
 		seq, err := os.ReadFile(blockFile)
 		if err == nil {
 			seqUint64, err := strconv.ParseUint(string(seq[:]), 10, 64)
@@ -103,8 +107,8 @@ var rootCmd = &cobra.Command{
 
 		interrupt := make(chan os.Signal, 10)
 		signal.Notify(interrupt, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGINT)
-		go follow(pgpool, client, file)
 
+		go follow(pgpool, file)
 		select {
 		case <-interrupt:
 			os.Exit(0)
@@ -113,24 +117,60 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-func follow(pgpool *pgxpool.Pool, client *rpc.Client, file *os.File) {
-	var resp Block
+func batchRequest(jsonStr string) ([]Responce, error) {
+	var responces []Responce
+	req, err := http.NewRequest("POST", rpcUrl, bytes.NewBuffer([]byte(jsonStr)))
+	if err != nil {
+		return responces, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return responces, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	fmt.Println(string(body))
+	if err := json.Unmarshal(body, &responces); err != nil { // Parse []byte to go struct pointer
+		fmt.Println("Can not unmarshal JSON")
+		return responces, err
+	}
+	return responces, nil
+
+}
+
+func follow(pgpool *pgxpool.Pool, file *os.File) {
 	for {
-		if err := client.Call(&resp, "eth_getBlockByNumber", fromBlock, true); err != nil {
+		jsonStr := ""
+		for i := 0; i < batch; i++ {
+			if i == 0 {
+				jsonStr = fmt.Sprintf(`{"method":"eth_getBlockByNumber","params":[%v, false],"id":1,"jsonrpc":"2.0"}`, fromBlock)
+			} else {
+				jsonStr += fmt.Sprintf(`, {"method":"eth_getBlockByNumber","params":[%v, false],"id":1,"jsonrpc":"2.0"}`, fromBlock)
+			}
+		}
+		responce, err := batchRequest(fmt.Sprintf("[%s]", jsonStr))
+		if err != nil {
 			panic(err)
 		}
 
-		if resp.Number == "" {
-			insertMissingBlock(pgpool, fmt.Sprintf("('%v')", fromBlock))
-		}
-		for _, tx := range resp.Transactions {
-			insertTx(pgpool, fmt.Sprintf("('%s')", tx.Hash))
+		for _, resp := range responce {
+			if resp.Result.Number == "" {
+				insertMissingBlock(pgpool, fmt.Sprintf("('%v')", fromBlock))
+			}
+			for _, tx := range resp.Result.Transactions {
+				insertTx(pgpool, fmt.Sprintf("('%s')", tx))
+			}
+			fromBlock += 1
+			fmt.Println(fromBlock)
+			file.Truncate(0)
+			file.Seek(0, 0)
+			file.WriteString(strconv.FormatUint(fromBlock, 10))
 		}
 
-		file.Truncate(0)
-		file.Seek(0, 0)
-		file.WriteString(strconv.FormatUint(fromBlock, 10))
-		fromBlock += 1
 		if (toBlock > 0) && (toBlock <= fromBlock) {
 			fmt.Printf("Ended on %v\n", fromBlock)
 			os.Exit(0)
