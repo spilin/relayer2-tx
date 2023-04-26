@@ -133,7 +133,6 @@ func batchRequest(jsonStr string) ([]Responce, error) {
 	defer resp.Body.Close()
 
 	body, _ := ioutil.ReadAll(resp.Body)
-	fmt.Println(string(body))
 	if err := json.Unmarshal(body, &responces); err != nil { // Parse []byte to go struct pointer
 		fmt.Println("Can not unmarshal JSON")
 		return responces, err
@@ -165,7 +164,6 @@ func follow(pgpool *pgxpool.Pool, file *os.File) {
 				insertTx(pgpool, fmt.Sprintf("('%s')", tx))
 			}
 			fromBlock += 1
-			fmt.Println(fromBlock)
 			file.Truncate(0)
 			file.Seek(0, 0)
 			file.WriteString(strconv.FormatUint(fromBlock, 10))
